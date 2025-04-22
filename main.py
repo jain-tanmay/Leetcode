@@ -176,11 +176,19 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Load the Excel sheet
+# Load the Excel sheet - move this outside of function for better caching
 @st.cache_data
 def load_data():
     df = pd.read_excel("problems.xlsx")
     return df.fillna("")
+
+# Cache the filtered dataframe
+@st.cache_data
+def filter_dataframe(df, selected_difficulty, search_query):
+    return df[
+        (df['difficulty'].isin(selected_difficulty)) &
+        (df['title'].str.contains(search_query, case=False, na=False))
+    ]
 
 df = load_data()
 
@@ -217,11 +225,8 @@ with st.sidebar:
     for diff, count in diff_counts.items():
         st.metric(diff, count)
 
-# Filter the dataframe
-filtered_df = df[
-    (df['difficulty'].isin(selected_difficulty)) &
-    (df['title'].str.contains(search_query, case=False, na=False))
-]
+# Use the cached filter function
+filtered_df = filter_dataframe(df, selected_difficulty, search_query)
 
 # Display problem count
 st.markdown(f"### 📝 Showing {len(filtered_df)} problems")
@@ -234,121 +239,120 @@ if 'current_problem' not in st.session_state:
 table_tab, details_tab = st.tabs(["📊 Problems Table", "📝 Problem Details"])
 
 with table_tab:
-    # Prepare the dataframe with custom columns
-    display_df = filtered_df.copy()
+    # Convert difficulty badges to plain text for better performance
+    display_df = filtered_df[['title', 'difficulty']].copy()
     
-    # Function to create difficulty badge HTML
-    def get_difficulty_badge(difficulty):
-        colors = {
-            'Easy': '#4ade80',
-            'Medium': '#facc15',
-            'Hard': '#fb7185'
-        }
-        bg_colors = {
-            'Easy': 'rgba(34, 197, 94, 0.2)',
-            'Medium': 'rgba(234, 179, 8, 0.2)',
-            'Hard': 'rgba(239, 68, 68, 0.2)'
-        }
-        return f"""
-            <div style="
-                background-color: {bg_colors[difficulty]};
-                color: {colors[difficulty]};
-                padding: 4px 12px;
-                border-radius: 20px;
-                font-weight: 500;
-                display: inline-block;
-                text-align: center;
-            ">
-                {difficulty}
-            </div>
-        """
-
-    # Add difficulty badges to the dataframe
-    display_df['difficulty_badge'] = display_df['difficulty'].apply(
-        lambda x: get_difficulty_badge(x)
+    # Add a selection column
+    display_df['select'] = False
+    
+    selected_rows = st.data_editor(
+        display_df,
+        column_config={
+            "select": st.column_config.CheckboxColumn(
+                "Select",
+                help="Select to view problem details",
+                default=False,
+                width="small",
+            ),
+            "title": st.column_config.TextColumn(
+                "Problem Title",
+                width="large"
+            ),
+            "difficulty": st.column_config.SelectboxColumn(
+                "Difficulty",
+                help="Problem difficulty level",
+                width="medium",
+                options=["Easy", "Medium", "Hard"]
+            ),
+        },
+        hide_index=True,
+        use_container_width=True,
+        key="problem_table",
+        disabled=["title", "difficulty"],  # Make specific columns read-only
     )
+    
+    # Get selected problem
+    if st.button("View Selected Problem"):
+        selected = selected_rows[selected_rows['select']].index
+        if len(selected) > 0:
+            selected_title = display_df.iloc[selected[0]]['title']
+            st.session_state.current_problem = selected_title
+            st.rerun()
+        else:
+            st.warning("Please select a problem first")
 
-    # Display problems in a custom table layout
-    for index, row in display_df.iterrows():
-        col1, col2, col3 = st.columns([3, 1, 1])
-        
-        with col1:
-            st.markdown(f"**{row['title']}**")
-        
-        with col2:
-            st.markdown(row['difficulty_badge'], unsafe_allow_html=True)
-        
-        with col3:
-            if st.button("View Details", key=f"btn_{index}", type="primary"):
-                st.session_state.current_problem = row['title']
-                st.rerun()
-        
-        st.markdown("---")
-
-    # Add table styling
-    st.markdown("""
-        <style>
-        .stMarkdown {
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 8px;
-            padding: 10px;
-            margin: 5px 0;
-        }
-        
-        .stButton button {
-            width: 100%;
-            padding: 6px 12px;
-            background: rgba(59, 130, 246, 0.1);
-            color: #3b82f6;
-            border: 1px solid #3b82f6;
-            transition: all 0.3s ease;
-        }
-        
-        .stButton button:hover {
-            background: rgba(59, 130, 246, 0.2);
-            transform: translateY(-1px);
-        }
-        
-        hr {
-            margin: 0;
-            border-color: rgba(255, 255, 255, 0.1);
-        }
-        </style>
-    """, unsafe_allow_html=True)
+# Add this function before the details_tab section
+def get_difficulty_badge(difficulty):
+    colors = {
+        'Easy': '#4ade80',
+        'Medium': '#facc15',
+        'Hard': '#fb7185'
+    }
+    bg_colors = {
+        'Easy': 'rgba(34, 197, 94, 0.2)',
+        'Medium': 'rgba(234, 179, 8, 0.2)',
+        'Hard': 'rgba(239, 68, 68, 0.2)'
+    }
+    return f"""
+        <div style="
+            background-color: {bg_colors[difficulty]};
+            color: {colors[difficulty]};
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-weight: 500;
+            display: inline-block;
+            text-align: center;
+        ">
+            {difficulty}
+        </div>
+    """
 
 with details_tab:
     if st.session_state.current_problem:
-        problem = filtered_df[filtered_df['title'] == st.session_state.current_problem].iloc[0]
+        # Cache the problem details retrieval
+        @st.cache_data
+        def get_problem_details(df, problem_title):
+            matching_problems = df[df['title'] == problem_title]
+            if matching_problems.empty:
+                return None
+            return matching_problems.iloc[0]
+            
+        problem = get_problem_details(filtered_df, st.session_state.current_problem)
         
-        # Add a back button
-        if st.button("← Back to Problems", type="secondary"):
+        if problem is None:
+            st.error("Problem not found. Please try selecting again.")
             st.session_state.current_problem = None
             st.rerun()
-        
-        # Problem header
-        st.markdown(f"""
-            <h2 style='color: #e2e8f0;'>{problem['title']}</h2>
-            {get_difficulty_badge(problem['difficulty'])}
-        """, unsafe_allow_html=True)
-        
-        # Problem content
-        st.markdown("### Problem Description")
-        st.markdown(problem['content'])
-        
-        # Code solutions in tabs
-        if problem['java_code'] or problem['cpp_code']:
-            code_tab1, code_tab2 = st.tabs(["Java Solution", "C++ Solution"])
+        else:
+            # Use tabs for better organization and performance
+            problem_tabs = st.tabs(["Description", "Solutions"])
             
-            with code_tab1:
-                if problem['java_code']:
-                    st.code(problem['java_code'], language='java')
-                    if problem['java_explanation']:
-                        with st.expander("View Explanation"):
-                            st.markdown(problem['java_explanation'])
+            with problem_tabs[0]:
+                st.markdown(f"""
+                    <h2 style='color: #e2e8f0;'>{problem['title']}</h2>
+                    {get_difficulty_badge(problem['difficulty'])}
+                """, unsafe_allow_html=True)
+                
+                st.markdown("### Problem Description")
+                st.markdown(problem['content'])
             
-            with code_tab2:
-                if problem['cpp_code']:
-                    st.code(problem['cpp_code'], language='cpp')
+            with problem_tabs[1]:
+                if problem['java_code'] or problem['cpp_code']:
+                    solution_tabs = st.tabs(["Java", "C++"])
+                    
+                    with solution_tabs[0]:
+                        if problem['java_code']:
+                            st.code(problem['java_code'], language='java')
+                            if problem['java_explanation']:
+                                with st.expander("View Explanation"):
+                                    st.markdown(problem['java_explanation'])
+                    
+                    with solution_tabs[1]:
+                        if problem['cpp_code']:
+                            st.code(problem['cpp_code'], language='cpp')
+                            if problem['java_explanation']:
+                                with st.expander("View Explanation"):
+                                    st.markdown(problem['java_explanation'])
     else:
         st.info("👈 Select a problem from the table to view its details")
 
